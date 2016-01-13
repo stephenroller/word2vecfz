@@ -38,16 +38,10 @@
 #define MAX_EXP 6
 #define MAX_SENTENCE_LENGTH 1000
 #define MAX_CODE_LENGTH 40
-#define PAIRS_BUFFER 16
-#define FILE_BUFFER 1024
+#define FILE_BUFFER 1048576
 
 // Precision of float numbers
 typedef float real;
-
-struct wordpair {
-  int word;
-  int context;
-};
 
 char train_file[MAX_STRING], output_file[MAX_STRING];
 char wvocab_file[MAX_STRING], cvocab_file[MAX_STRING];
@@ -74,67 +68,45 @@ int bufidx = 0;
 int bufmax = 0;
 int read_everything = 0;
 
-int read_pairs(struct wordpair* buffer) {
-  if (read_everything) {
-    fprintf(stderr, "\ngot read_everything so dropping cleanly\n");
-    return 0;
-  }
-
-  int i = 0, n = 0;
+int read_data(char* buffer) {
+  int n = 0;
   int bzerror = BZ_OK;
 
-  // clear out the buffer
-  //for (n=0; n<PAIRS_BUFFER; n++) {
-  //  buffer[n].word = 0;
-  //  buffer[n].context = 0;
-  //}
   // make sure two threads aren't reading simultaneously
   pthread_mutex_lock(&mutex);
 
-  char word[MAX_STRING];
-
-  int swtch = 0;
-  n = 0;
-  i = 0;
-  while (1) {
-    if (bufidx >= bufmax) {
-      if (bzerror == BZ_STREAM_END) {
-        // already read everything!
-        fprintf(stderr, "got stream end, lets stop here.\n");
-        read_everything = 1;
-        break;
-      }
-
-      bufmax = BZ2_bzRead(&bzerror, inpt_strm, &file_buff, FILE_BUFFER);
-      if (!(bzerror == BZ_OK || bzerror == BZ_STREAM_END)) {
-        fprintf(stderr, "Oh no, BZ2 error upon reading! (%d)\n", bzerror);
-        break;
-      }
-      bufidx = 0;
+  // find the last splittable spot in our buffer
+  for (n = bufmax - 1; n > 0; n--) {
+    if (file_buff[n] == '\n') {
+      break;
     }
+  }
+  n++;
 
-    char c = file_buff[++bufidx];
-    if (c == ' ' || c == '\t' || c == '\n') {
-      word[i] = 0;
-      if (!swtch) {
-        buffer[n].word = SearchVocab(wv, word);
-      } else {
-        buffer[n].context = SearchVocab(cv, word);
-        n++;
-        if (n >= PAIRS_BUFFER) {
-          break;
-        }
-      }
-      swtch = !swtch;
-      i = 0;
-    } else {
-      word[i] = c;
-      i++;
-    }
+  strncpy(buffer, file_buff, n);
+  buffer[n] = '\0';
+  // copy the leftovers to the front of the buffer and refill buffer
+  int leftover = bufmax - n;
+  //printf("\ncopied %d leftovers to beginning of buffer\n", leftover);
+  strncpy(file_buff, &file_buff[n], leftover);
+  if (!read_everything) {
+    bufmax = BZ2_bzRead(&bzerror, inpt_strm, &file_buff[leftover], FILE_BUFFER - leftover) + leftover;
+  } else {
+    bufmax = leftover;
+  }
+
+  if (bzerror == BZ_OK) {
+    // pass
+  } else if (bzerror == BZ_STREAM_END) {
+    read_everything = 1;
+  } else {
+    fprintf(stderr, "BZ error, very unfortunate (%d).\n", bzerror);
+    n = 0;
   }
 
   // free up the lock
   pthread_mutex_unlock(&mutex);
+  if (n < 0) n = 0;
   return n;
 }
 
@@ -180,8 +152,7 @@ void InitNet(struct vocabulary *wv, struct vocabulary *cv) {
 // Word and context come from different vocabularies, but we do not really care about that
 // at this point.
 void *TrainModelThread(void *id) {
-  int wpi = -1, wpn = 0;
-  int ctxi = -1, wrdi = 0;
+  int ctxi = -1, wrdi = -1;
   long long d;
   long long word_count = 0, last_word_count = 0;
   long long l1, l2, c, target, label;
@@ -190,8 +161,10 @@ void *TrainModelThread(void *id) {
   clock_t now;
   real *neu1 = (real *)calloc(layer1_size, sizeof(real));
   real *neu1e = (real *)calloc(layer1_size, sizeof(real));
-  struct wordpair *pairs = (struct wordpair*)calloc(PAIRS_BUFFER, sizeof(struct wordpair));
-  struct wordpair *pair;
+
+  char buffer[FILE_BUFFER];
+  char word[MAX_STRING];
+  int i = 0, swtch = 0, buflen = 0, j = 0;
 
   long long train_words = wv->word_count;
   while (1) { //HERE @@@
@@ -211,15 +184,36 @@ void *TrainModelThread(void *id) {
         if (alpha < starting_alpha * 0.0001) alpha = starting_alpha * 0.0001;
     }
 
-    if (++wpi >= wpn) {
-      wpn = read_pairs(pairs);
-      //fprintf(stderr, "\nwpn returned %d\n", wpn);
-      if (wpn == 0) break;
-      wpi = 0;
+    while (1) {
+      if (i >= buflen) {
+        buflen = read_data(buffer);
+        if (buflen <= 0) break;
+        i = 0;
+      }
+      c = buffer[i++];
+      if (c == '\t' || c == '\n') {
+        word[j] = '\0';
+        j = 0;
+        swtch = !swtch;
+        if (swtch) {
+          wrdi = SearchVocab(wv, word);
+          if (wrdi < 0) {
+            printf("Failed to find wv '%s'\n", word);
+          }
+        } else {
+          ctxi = SearchVocab(cv, word);
+          if (ctxi < 0) {
+            printf("Failed to find cv '%s'\n", word);
+          }
+          break;
+        }
+      } else {
+        word[j++] = c;
+      }
     }
-    pair = &pairs[wpi];
-    wrdi = pair->word;
-    ctxi = pair->context;
+    if (buflen <= 0) {
+      break;
+    }
 
     for (c = 0; c < layer1_size; c++) neu1[c] = 0;
     for (c = 0; c < layer1_size; c++) neu1e[c] = 0;
@@ -261,7 +255,6 @@ void *TrainModelThread(void *id) {
     // Learn weights input -> hidden
     for (c = 0; c < layer1_size; c++) syn0[c + l1] += neu1e[c];
   }
-  fprintf(stderr, "\nclosing out the thread\n");
   free(neu1);
   free(neu1e);
   pthread_exit(NULL);
@@ -297,14 +290,10 @@ void TrainModel() {
   // join all threads
   for (a = 0; a < num_threads; a++) pthread_join(pt[a], NULL);
   // all done with main computation,
-  fprintf(stderr, "\njoined\n");
   // let's clean up
   BZ2_bzReadClose(&bzerror, inpt_strm);
-  fprintf(stderr, "\nbzclosed %d\n", bzerror);
   fclose(inptfile);
-  fprintf(stderr, "\nfclosed %d\n", bzerror);
   pthread_mutex_destroy(&mutex);
-  fprintf(stderr, "\nmutex destroyed %d\n", bzerror);
 
   fo = fopen(output_file, "wb");
   // Save the word vectors
