@@ -1,3 +1,7 @@
+Addendum for bz2 file:
+The only difference is the dep.contexts file should be bz2 compressed.
+
+
 
 Producing embeddings with word2vecf:
 ====

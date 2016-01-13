@@ -336,7 +336,7 @@ int main(int argc, char **argv) {
     printf("Options:\n");
     printf("Parameters for training:\n");
     printf("\t-train <file>\n");
-    printf("\t\tUse text data from <file> to train the model\n");
+    printf("\t\tUse text data from <file> to train the model. *Must* be bz2 compressed.\n");
     printf("\t-output <file>\n");
     printf("\t\tUse <file> to save the resulting word vectors / word clusters\n");
     printf("\t-size <int>\n");

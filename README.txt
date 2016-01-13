@@ -1,3 +1,24 @@
+This is a modification of Yoav Goldberg's modification of word2vec! Yay for
+forking. Namely, this is a small change to the Dependency-based Word
+Embeddings software presented by (Levy and Goldberg, 2014).
+
+I guess I'll call it word2vecfz
+
+In this modification:
+    - Removed the ability to perform multiple iterations over data
+    - Removed the variation of word2vec
+    - Added the ability to read from a BZ2 compressed corpus file.
+
+This last change is the big one. Now the -train file *must* be bz2 compressed.
+It must be a single stream (so no cat'ing multiple bz2 files).
+
+I did this because the corpus file can easily reach hundreds of gigabytes when
+using the 4B word corpora I've employed, but the compressed file will be maybe
+20gb. Since I have strict quotas at University, this is my work around.
+
+
+-------
+
 
 This is a modification of the word2vec software by Mikolov et.al, allowing:
    - performing multiple iterations over the data.
